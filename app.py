@@ -1,4 +1,6 @@
-"""Demo de clase: un modelo local (Ollama) consulta MySQL vía MCP y la app dispara un escenario de Make.
+"""Demo de clase: un modelo de IA consulta MySQL vía MCP y la app dispara un escenario de Make.
+
+El modelo se elige en el .env (Ollama, OpenAI o Claude): ver proveedores.py.
 
 Ahorro de tokens:
 - El contexto de la base (diccionario de datos) se obtiene una sola vez y se reutiliza en cada pregunta.
@@ -17,11 +19,11 @@ import streamlit as st
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from ollama import AsyncClient
+
+from proveedores import MODEL, PROVEEDOR, nueva_conversacion
 
 load_dotenv()
 
-MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
 MAX_FILAS_MODELO = 5  # filas de muestra que ve el modelo; el resto solo se muestra en pantalla
 COLUMNAS = ["id", "ciudadano", "asunto", "categoria", "prioridad", "estado", "fecha_ingreso"]
 
@@ -132,38 +134,25 @@ def resumen_para_modelo(texto: str, filas: list) -> str:
 
 async def preguntar(pregunta: str, contexto: str):
     """El modelo decide qué consulta hacer; las tools vienen del servidor MCP."""
-    ollama = AsyncClient()  # habla con Ollama en http://localhost:11434
-    filas, uso = [], {"entrada": 0, "salida": 0}
+    filas = []
     async with sesion_mysql() as sesion:
-        herramientas = [
-            {"type": "function", "function": {
-                "name": t.name, "description": t.description, "parameters": t.input_schema}}
-            for t in (await sesion.list_tools()).tools
-        ]
+        herramientas = (await sesion.list_tools()).tools
         # Primero lo fijo (instrucciones + estructura), al final la pregunta: ese prefijo
         # repetido es lo que los proveedores en la nube cachean (prompt caching).
-        mensajes = [
-            {"role": "system", "content": f"{INSTRUCCIONES}\n\nEstructura de la base:\n{contexto}"},
-            {"role": "user", "content": pregunta},
-        ]
+        conversacion = nueva_conversacion(
+            f"{INSTRUCCIONES}\n\nEstructura de la base:\n{contexto}", pregunta, herramientas
+        )
         for _ in range(5):  # tope de vueltas por si un modelo pequeño se queda repitiendo consultas
-            r = await ollama.chat(model=MODEL, messages=mensajes, tools=herramientas, think=False)
-            uso["entrada"] += r.prompt_eval_count or 0
-            uso["salida"] += r.eval_count or 0
-            mensajes.append(r.message)
-            if not r.message.tool_calls:
-                return r.message.content or "", filas, uso
-            for llamada in r.message.tool_calls:
-                texto = await llamar_herramienta(
-                    sesion, llamada.function.name, dict(llamada.function.arguments)
-                )
-                filas = leer_filas(texto) or filas  # la tabla completa se queda en la app
-                mensajes.append({
-                    "role": "tool",
-                    "tool_name": llamada.function.name,
-                    "content": resumen_para_modelo(texto, filas),
-                })
-    return "El modelo no logró terminar la consulta; intenta reformular la pregunta.", filas, uso
+            texto, llamadas = await conversacion.turno()
+            if not llamadas:
+                return texto, filas, conversacion.uso
+            resultados = []
+            for llamada in llamadas:
+                salida = await llamar_herramienta(sesion, llamada.nombre, llamada.argumentos)
+                filas = leer_filas(salida) or filas  # la tabla completa se queda en la app
+                resultados.append((llamada, resumen_para_modelo(salida, filas)))
+            conversacion.agregar_resultados(resultados)
+    return "El modelo no logró terminar la consulta; intenta reformular la pregunta.", filas, conversacion.uso
 
 
 def completar_fila(fila: dict) -> dict:
@@ -198,7 +187,7 @@ def mostrar_resultado(filas: list, respuesta: str, uso: dict | None = None):
 
 st.set_page_config(page_title="Solicitudes + Make", page_icon="⚡")
 st.title("⚡ Solicitudes ciudadanas → Make")
-st.caption("Un modelo local (Ollama) consulta MySQL por MCP; Make hace el resto. Datos ficticios.")
+st.caption(f"Modelo: {PROVEEDOR} · {MODEL}. Consulta MySQL por MCP; Make hace el resto. Datos ficticios.")
 
 with st.sidebar:
     correo = st.text_input("Correo de destino de la demo")
@@ -240,8 +229,9 @@ if "respuesta" in st.session_state:
 filas = st.session_state.get("filas", [])
 uso = st.session_state.get("uso")
 if uso:
+    cache = f" ({uso['cache']} desde caché)" if uso.get("cache") else ""
     st.caption(
-        f"Tokens: {uso['entrada']} de entrada · {uso['salida']} de salida · "
+        f"Tokens: {uso['entrada']} de entrada{cache} · {uso['salida']} de salida · "
         f"el modelo vio {min(len(filas), MAX_FILAS_MODELO)} de {len(filas)} filas"
     )
 if filas:

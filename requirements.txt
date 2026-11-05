@@ -1,6 +1,8 @@
 streamlit>=1.50
-ollama>=0.6
 mcp>=2.3
+ollama>=0.6
+openai>=2.0
+anthropic>=2.0
 requests>=2.32
 python-dotenv>=1.0
 pandas>=2.2
