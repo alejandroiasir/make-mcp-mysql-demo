@@ -157,3 +157,7 @@ Toda la conexión con los modelos está en `proveedores.py`: una clase por prove
 | `make_escenario.md` | Guía para armar el escenario en Make |
 | `guion_clase.md` | Guion de la clase de 60 minutos |
 | `.env.example` | Plantilla de variables de entorno |
+
+## Licencia
+
+[MIT](LICENSE) © 2026 Alejandro Iasir Moraga Moya. Puedes usar, modificar y compartir este código libremente, manteniendo el aviso de copyright.
